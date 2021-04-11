@@ -14,7 +14,7 @@ const char *PSW = "****";
 //hier die nr. des Sensors eintragen um eine einfachere handhabung bei der ip eingabe zu haben
 const char *Nummnerierung_der_server = "Beet-vorm-fenster";
 const char *version = "1.0";
-
+//
 bool restart = false;
 Kalibrierung kalibrierung;
 kali_dat dat;
