@@ -1,118 +1,149 @@
 #include <Arduino.h>
 #include <ESP8266WiFi.h>
-#include <WiFiClient.h>
-#include <ESP8266WebServer.h>
-#include <Arduino.h>
+#include <ESPAsyncTCP.h>
+#include <ESPAsyncWebServer.h>
 #include <FS.h>
 #include "Kalibrierung.h"
 #include <EEPROM.h>
-#include <ESP8266mDNS.h>
 #include <string.h>
 
-const char *SSID = "******";
-const char *PSW = "****";
-//hier die nr. des Sensors eintragen um eine einfachere handhabung bei der ip eingabe zu haben
-const char *Nummnerierung_der_server = "Beet-vorm-fenster";
-const char *version = "1.0";
-//
+AsyncWebServer server(80);
+
+const char *ssid = "Pretty Fly For A Wifi";
+const char *password = "WGlan121019";
+const char *version = "1.2";
 bool restart = false;
 Kalibrierung kalibrierung;
 kali_dat dat;
-ESP8266WebServer server(80);
 
-void handle_restart()
+const char *OTA_INDEX PROGMEM = R"=====(<!DOCTYPE html><html><head><meta charset=utf-8><title>OTA</title></head><body><div class="upload"><form method="POST" action="/ota" enctype="multipart/form-data"><input type="file" name="data" /><input type="submit" name="upload" value="Upload" title="Upload Files"></form></div></body></html>)=====";
+
+const char *PARAM_MESSAGE = "message";
+
+void handleOTAUpload(AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final)
 {
-  server.send(200, "text / plain", "neustart nachdem alle bewaesserungen ausgefuehrt wurden");
+  if (!index)
+  {
+    Serial.printf("UploadStart: %s\n", filename.c_str());
+    // calculate sketch space required for the update, for ESP32 use the max constant
+#if defined(ESP32)
+    if (!Update.begin(UPDATE_SIZE_UNKNOWN))
+#else
+    const uint32_t maxSketchSpace = (ESP.getFreeSketchSpace() - 0x1000) & 0xFFFFF000;
+    if (!Update.begin(maxSketchSpace))
+#endif
+    {
+      // start with max available size
+      Update.printError(Serial);
+    }
+#if defined(ESP8266)
+    Update.runAsync(true);
+#endif
+  }
+
+  if (len)
+  {
+    Update.write(data, len);
+  }
+
+  // if the final flag is set then this is the last frame of data
+  if (final)
+  {
+    if (Update.end(true))
+    {
+      // true to set the size to the current progress
+      Serial.printf("Update Success: %ub written\nRebooting...\n", index + len);
+      ESP.restart();
+    }
+    else
+    {
+      Update.printError(Serial);
+    }
+  }
+}
+
+void handle_restart(String &message)
+{
+  message = "neustart starten";
   restart = true;
 }
 
-void handle_version()
+void handle_version(String &message)
 {
-  String ausgabe = String(version);
-  server.send(200, "text / plain", ausgabe);
+  message = String(version);
 }
 
-void handle_root()
+void handle_root(String &message)
 {
-  String ausgabe = "zum kalibrieren /kalibrierung?typ=<0 fuer trocken 1 fuer nass>   zum neustart /restart zum abfragen /abfrage      version abfrage /version . aktuell installierte version: ";
-  ausgabe += String(version);
-
-  server.send(200, "text / plain", ausgabe);
+  message = "zum kalibrieren /kalibrierung?typ=<0 fuer trocken 1 fuer nass>   zum neustart /restart zum abfragen /abfrage      version abfrage /version . aktuell installierte version: ";
+  message += String(version);
 }
 
-void handle_kali()
+void handle_kali(String &message)
 {
   bool probl = false;
-  String message = "";
   dat = kalibrierung.laden();
-  if (server.arg("typ") == "")
+  if (message == "0")
   {
-    message = "ERROR";
-  }
-  else
-  {
-    if (server.arg("typ") == "0")
+    try
     {
-      try
-      {
-        analogRead(A0);
-      }
-      catch (...)
-      {
-        probl = true;
-      }
-
-      if (!probl)
-      {
-        dat.trocken = analogRead(A0);
-        kalibrierung.speichern(dat);
-        message += "gespeichert";
-        Serial.println("Trocken gespeichert auf abrfage");
-      }
-      else
-      {
-        dat.trocken = 1024;
-        kalibrierung.speichern(dat);
-        message += "Fehler, ist A0 richtig verbunden?";
-        Serial.println("error");
-      }
+      analogRead(A0);
     }
-    if (server.arg("typ") == "1")
+    catch (...)
     {
-      try
-      {
-        analogRead(A0);
-      }
-      catch (...)
-      {
-        probl = true;
-      }
-      if (!probl)
-      {
+      probl = true;
+    }
 
-        dat = kalibrierung.laden();
-        dat.nass = analogRead(A0);
-        Serial.print("dat.nass nach rechnung: )");
-        Serial.println(dat.nass);
-        kalibrierung.speichern(dat);
-        message += "gespeichert";
-        Serial.println("nass gespeichert auf abrfage");
-      }
-      else
-      {
-        dat.nass = 0;
-        kalibrierung.speichern(dat);
-        message += "Fehler, ist A0 richtig verbunden?";
-        Serial.println("error");
-      }
+    if (!probl)
+    {
+      dat.trocken = analogRead(A0);
+      kalibrierung.speichern(dat);
+      message = String(dat.trocken);
+      message += " bits für Trocken gespeichert";
+      Serial.println("Trocken gespeichert auf abrfage");
+    }
+    else
+    {
+      dat.trocken = 1024;
+      kalibrierung.speichern(dat);
+      message += "Fehler, ist A0 richtig verbunden?";
+      Serial.println("error");
     }
   }
-  server.send(200, "text / plain", message);
+  if (message == "1")
+  {
+    try
+    {
+      analogRead(A0);
+    }
+    catch (...)
+    {
+      probl = true;
+    }
+    if (!probl)
+    {
+
+      dat = kalibrierung.laden();
+      dat.nass = analogRead(A0);
+      Serial.print("dat.nass nach rechnung: )");
+      Serial.println(dat.nass);
+      kalibrierung.speichern(dat);
+      message = String(dat.nass);
+      message += " bits für nass gespeichert";
+      Serial.println("nass gespeichert auf abrfage");
+    }
+    else
+    {
+      dat.nass = 0;
+      kalibrierung.speichern(dat);
+      message += "Fehler, ist A0 richtig verbunden?";
+      Serial.println("error");
+    }
+  }
 }
 
-void handle_abfrage()
+void handle_abfrage(String &message)
 {
-  String message = "";
   bool probl = false;
 
   try
@@ -145,52 +176,118 @@ void handle_abfrage()
     int help = akt_wert_help;
     Serial.print("aktueller wert:= ");
     Serial.println(help);
-    message += String(help);
+    message = String(help);
   }
+}
 
-  server.send(200, "text / plain", message);
+void notFound(AsyncWebServerRequest *request)
+{
+  request->send(404, "text/plain", "Not found");
 }
 
 void setup()
 {
-  EEPROM.begin(10);
+  EEPROM.begin(125);
   Serial.begin(115200);
+  dat = kalibrierung.laden();
   WiFi.mode(WIFI_STA);
-  WiFi.begin(SSID, PSW);
-  Serial.print("Waiting to connect");
+  WiFi.begin(ssid, password);
+  int timeout = 0;
   while (WiFi.status() != WL_CONNECTED)
   {
     delay(500);
     Serial.print(".");
+    timeout++;
+    if (timeout >= 20)
+    {
+      ESP.restart();
+    }
   }
   Serial.println(" ");
-
-  Serial.print("IP address: ");
-  Serial.println(WiFi.localIP());
-  server.on("/kalibrierung", handle_kali);
-  server.on("/abfrage", handle_abfrage);
-  server.on("/", handle_root);
-  server.on("/restart", handle_restart);
-  server.on("/version", handle_version);
-  server.begin();
-  char *name = new char[strlen("feuchteserver") + strlen(Nummnerierung_der_server)];
-  strcpy(name, "feuchteserver");
-  strcat(name, Nummnerierung_der_server);
-  Serial.print("dns: ");
-  Serial.print(name);
-  Serial.println(".local");
-  if (!MDNS.begin(name))
+  if (WiFi.waitForConnectResult() != WL_CONNECTED)
   {
-    Serial.println("Error setting up MDNS responder!");
+    Serial.printf("WiFi Failed!\n");
+    return;
   }
-  Serial.println("mDNS responder started");
-  Serial.println("Server listening");
+
+  Serial.print("IP Address: ");
+  Serial.println(WiFi.localIP());
+
+  server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
+    String message;
+    handle_root(message);
+    request->send(200, "text/plain", message);
+  });
+  server.on("/version", HTTP_GET, [](AsyncWebServerRequest *request) {
+    String message;
+    handle_version(message);
+    request->send(200, "text/plain", message);
+  });
+  server.on("/restart", HTTP_GET, [](AsyncWebServerRequest *request) {
+    String message;
+    handle_restart(message);
+    request->send(200, "text/plain", message);
+  });
+  server.on("/abfrage", HTTP_GET, [](AsyncWebServerRequest *request) {
+    String message;
+    handle_abfrage(message);
+    request->send(200, "text/plain", message);
+  });
+  server.on("/kalibrierung", HTTP_GET, [](AsyncWebServerRequest *request) {
+    String message;
+    if (request->hasParam("typ"))
+    {
+      message = request->getParam("typ")->value();
+      handle_kali(message);
+    }
+    else
+    {
+      message = "No message sent";
+    }
+    request->send(200, "text/plain", "Hello, GET: " + message);
+  });
+  server.on(
+      "/ota",
+      HTTP_POST,
+      [](AsyncWebServerRequest *request) {
+        request->send(200);
+      },
+      handleOTAUpload);
+
+  server.on("/ota",
+            HTTP_GET,
+            [](AsyncWebServerRequest *request) {
+              AsyncWebServerResponse *response = request->beginResponse_P(200, "text/html", OTA_INDEX);
+              request->send(response);
+            });
+  server.onNotFound(notFound);
+
+  server.begin();
 }
+
+void wifi_reconnect()
+{
+  int wifi_retry = 0;
+  while (WiFi.status() != WL_CONNECTED && wifi_retry < 5)
+  {
+    wifi_retry++;
+    Serial.println("WiFi not connected. Try to reconnect");
+    WiFi.disconnect();
+    WiFi.mode(WIFI_OFF);
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(ssid, password);
+    delay(500);
+  }
+  if (wifi_retry >= 5)
+  {
+    Serial.println("\nReboot");
+    ESP.restart();
+  }
+};
 
 void loop()
 {
-  MDNS.update();
-  server.handleClient();
+  wifi_reconnect();
   if (restart)
   {
     ESP.restart();
