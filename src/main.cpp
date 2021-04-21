@@ -9,8 +9,8 @@
 
 AsyncWebServer server(80);
 
-const char *ssid = "Pretty Fly For A Wifi";
-const char *password = "WGlan121019";
+const char *ssid = "SSID";
+const char *password = "PSW";
 const char *version = "1.2";
 bool restart = false;
 Kalibrierung kalibrierung;
